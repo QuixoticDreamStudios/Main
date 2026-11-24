@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { font-family: sans-serif; text-align: center; background: #1a1a2e; color: white; padding: 20px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; height: 70vh; margin-top: 15px; }
+    button { font-size: 28px; border: none; border-radius: 14px; color: white; font-weight: bold; }
+    .a { background: #e21b3c; } .b { background: #1368ce; }
+    .c { background: #d89e00; } .d { background: #26890c; }
+  </style>
+</head>
+<body>
+  <h3 id="status">Connecting to laptop...</h3>
+  <div id="pad" class="grid" style="display:none;">
+    <button class="a" onclick="sendChoice('A')">A</button>
+    <button class="b" onclick="sendChoice('B')">B</button>
+    <button class="c" onclick="sendChoice('C')">C</button>
+    <button class="d" onclick="sendChoice('D')">D</button>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const GIST_ID = params.get("g");
+    const TOKEN = params.get("t");
+    const headers = {
+      "Authorization": `Bearer ${TOKEN}`,
+      "Accept": "application/vnd.github+json",
+      "Content-Type": "application/json"
+    };
+
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:://google.com" }] });
+    const phoneIce = [];
+    let channel = null;
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        phoneIce.push({
+          media: e.candidate.sdpMid,
+          index: e.candidate.sdpMLineIndex,
+          candidate: e.candidate.candidate
+        });
+      }
+    };
+
+    pc.ondatachannel = (e) => {
+      channel = e.channel;
+      channel.onopen = () => {
+        document.getElementById("status").innerText = "Connected! Tap an answer:";
+        document.getElementById("pad").style.display = "grid";
+      };
+    };
+
+    async function connect() {
+      const res = await fetch(`https://github.com{GIST_ID}`, { headers });
+      const data = await res.json();
+      const sig = JSON.parse(data.files["signal.json"].content);
+
+      await pc.setRemoteDescription({ type: "offer", sdp: sig.offer });
+      for (const c of sig.host_ice) {
+        await pc.addIceCandidate({ sdpMid: c.media, sdpMLineIndex: c.index, candidate: c.candidate });
+      }
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      // Wait 1.5s for phone ICE candidates, then post Answer back to Gist
+      setTimeout(async () => {
+        sig.answer = pc.localDescription.sdp;
+        sig.phone_ice = phoneIce;
+        await fetch(`https://github.com{GIST_ID}`, {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({ files: { "signal.json": { content: JSON.stringify(sig) } } })
+        });
+      }, 1500);
+    }
+
+    function sendChoice(choice) {
+      if (channel && channel.readyState === "open") {
+        channel.send(JSON.stringify({ type: "answer", choice }));
+      }
+    }
+
+    connect();
+  </script>
+</body>
+</html>
